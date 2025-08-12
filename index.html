@@ -43,6 +43,11 @@
       gap: 0.5rem;
     }
 
+    p{bottom: 15px;
+      position: sticky;
+            text-align: center;
+    }
+
 
   </style>
 </head>
@@ -66,7 +71,7 @@
   <br>
   <button id="download" disabled>Download Compressed Image</button>
   <div class="info" id="compressionInfo"></div>
-
+<p>Developed by Mariana Marangoni</p>
   <script>
     const canvas = document.getElementById('canvas');
     const gl = canvas.getContext('webgl');
