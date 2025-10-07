@@ -1,0 +1,198 @@
+
+    const canvas = document.getElementById('canvas');
+    const gl = canvas.getContext('webgl');
+    const upload = document.getElementById('upload');
+    const download = document.getElementById('download');
+    const pixelSizeSlider = document.getElementById('pixelSize');
+    const thresholdSlider = document.getElementById('threshold');
+    const paletteSizeSlider = document.getElementById('paletteSize');
+    const formatSelect = document.getElementById('format');
+    const compressionInfo = document.getElementById('compressionInfo');
+
+    let originalSize = 0;
+
+    const vertSrc = `
+      attribute vec2 a_position;
+      varying vec2 v_texCoord;
+      void main() {
+        v_texCoord = a_position * 0.5 + 0.5;
+        gl_Position = vec4(a_position, 0.0, 1.0);
+      }
+    `;
+
+const fragSrc = `
+  precision mediump float;
+  uniform sampler2D u_image;
+  uniform vec2 u_resolution;
+  uniform float u_cellSize;
+  uniform float u_threshold; // variance threshold
+  varying vec2 v_texCoord;
+  uniform float u_paletteSize;
+
+vec3 quantizePalette(vec3 color, float levels) {
+    return floor(color * levels) / levels;
+}
+
+  vec4 averageColor(vec2 coord, float size) {
+    vec4 sum = vec4(0.0);
+    float count = 0.0;
+    for (float x = 0.0; x < 8.0; x++) {
+      for (float y = 0.0; y < 8.0; y++) {
+        vec2 offset = vec2(x, y) * size / u_resolution;
+        sum += texture2D(u_image, coord + offset);
+        count += 1.0;
+      }
+    }
+    return sum / count;
+  }
+
+  float variance(vec2 coord, float size, vec4 avg) {
+    float v = 0.0;
+    for (float x = 0.0; x < 8.0; x++) {
+      for (float y = 0.0; y < 8.0; y++) {
+        vec2 offset = vec2(x, y) * size / u_resolution;
+        vec4 c = texture2D(u_image, coord + offset);
+        v += distance(c.rgb, avg.rgb);
+      }
+    }
+    return v / 64.0;
+  }
+
+  vec3 posterize(vec3 color, float levels) {
+    return floor(color * levels) / levels;
+  }
+
+  void main() {
+    vec2 pixelCoord = gl_FragCoord.xy / u_resolution;
+    vec2 cellCoord = floor(gl_FragCoord.xy / u_cellSize) * u_cellSize / u_resolution;
+    vec4 avg = averageColor(cellCoord, u_cellSize);
+    float var = variance(cellCoord, u_cellSize, avg);
+
+    vec4 finalColor = (var < u_threshold) ? avg : texture2D(u_image, pixelCoord);
+
+    // Posterization based on slider (mapped to 2–32 levels)
+    float levels = mix(2.0, 32.0, u_threshold);
+    finalColor.rgb = posterize(finalColor.rgb, levels);
+finalColor.rgb = quantizePalette(finalColor.rgb, u_paletteSize);
+    gl_FragColor = finalColor;
+  }
+`;
+
+
+    function compileShader(type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      return shader;
+    }
+
+    function createProgram(vs, fs) {
+      const program = gl.createProgram();
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      return program;
+    }
+
+    function quantizeCanvas(ctx, w, h, paletteSize) {
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const data = imgData.data;
+      const quant = 255 / (paletteSize - 1);
+      for (let i = 0; i < data.length; i += 4) {
+        for (let j = 0; j < 3; j++) {
+          data[i + j] = Math.round(data[i + j] / quant) * quant;
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    }
+
+    function render(img) {
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const vs = compileShader(gl.VERTEX_SHADER, vertSrc);
+      const fs = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+      const program = createProgram(vs, fs);
+      gl.useProgram(program);
+
+      const posBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1, 1, -1, -1, 1,
+        -1, 1, 1, -1, 1, 1
+      ]), gl.STATIC_DRAW);
+
+      const posLoc = gl.getAttribLocation(program, "a_position");
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+      const tex = gl.createTexture();
+      const ctx2D = document.createElement('canvas').getContext('2d');
+      ctx2D.canvas.width = img.naturalWidth;
+      ctx2D.canvas.height = img.naturalHeight;
+      ctx2D.translate(0, ctx2D.canvas.height);
+      ctx2D.scale(1, -1);
+      ctx2D.drawImage(img, 0, 0);
+
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ctx2D.canvas);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.uniform2f(gl.getUniformLocation(program, "u_resolution"), canvas.width, canvas.height);
+      gl.uniform1i(gl.getUniformLocation(program, "u_image"), 0);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+
+      function drawPass() {
+  const pixelSize = parseFloat(pixelSizeSlider.value);
+  const threshold = parseFloat(thresholdSlider.value); 
+  const paletteSize = parseInt(paletteSizeSlider.value);
+  const format = formatSelect.value;
+
+  gl.uniform1f(gl.getUniformLocation(program, "u_cellSize"), pixelSize);
+  gl.uniform1f(gl.getUniformLocation(program, "u_threshold"), threshold);
+
+gl.uniform1f(gl.getUniformLocation(program, "u_paletteSize"), paletteSize - 1);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        const tmpCanvas = document.createElement('canvas');
+        tmpCanvas.width = canvas.width;
+        tmpCanvas.height = canvas.height;
+        const ctx = tmpCanvas.getContext('2d');
+ctx.drawImage(canvas, 0, 0);
+
+
+        const mime = format === 'webp' ? 'image/webp' : 'image/jpeg';
+        const dataUrl = tmpCanvas.toDataURL(mime, 0.8);
+        const compressedSize = Math.round((dataUrl.length * 3 / 4) / 1024);
+        const ratio = originalSize > 0 ? Math.round((1 - (compressedSize * 1024) / originalSize) * 100) : 0;
+        compressionInfo.textContent = `Compressed size: ${compressedSize} KB (${ratio}% smaller)`;
+
+        download.onclick = () => {
+          const link = document.createElement('a');
+          link.download = 'compressed.' + format;
+          link.href = dataUrl;
+          link.click();
+        };
+        download.disabled = false;
+      }
+
+      drawPass();
+      pixelSizeSlider.oninput = drawPass;
+      thresholdSlider.oninput = drawPass;
+      paletteSizeSlider.oninput = drawPass;
+      formatSelect.onchange = drawPass;
+    }
+
+    upload.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      originalSize = file.size;
+      const img = new Image();
+      img.onload = () => render(img);
+      img.src = URL.createObjectURL(file);
+    });
